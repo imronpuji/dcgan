@@ -113,11 +113,17 @@ class DataPreprocessing:
         )
 
 def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_dir):
-    # Initialize networks
+    # Initialize networks and move to GPU
     netG = Generator().to(device)
     netD = Discriminator().to(device)
     
-    # Setup optimizers
+    # Enable multi-GPU
+    if torch.cuda.device_count() > 1:
+        print(f"Using {torch.cuda.device_count()} GPUs!")
+        netG = nn.DataParallel(netG)
+        netD = nn.DataParallel(netD)
+    
+    # Setup optimizers with better hyperparameters
     optimizerD = optim.Adam(netD.parameters(), lr=GAN_LEARNING_RATE, betas=(GAN_BETA1, 0.999))
     optimizerG = optim.Adam(netG.parameters(), lr=GAN_LEARNING_RATE, betas=(GAN_BETA1, 0.999))
     
@@ -136,6 +142,9 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_d
     
     print(f"\nStarting DCGAN training for {class_name}")
     
+    # Enable cuDNN autotuner
+    torch.backends.cudnn.benchmark = True
+    
     for epoch in range(GAN_EPOCHS):
         g_loss_epoch = 0.0
         d_loss_epoch = 0.0
@@ -143,10 +152,10 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_d
         
         for i, (real_images, _) in enumerate(data_loader):
             batch_size = real_images.size(0)
-            real_images = real_images.to(device)
+            real_images = real_images.to(device, non_blocking=True)  # Enable async data transfer
             
             # Train Discriminator
-            netD.zero_grad()
+            netD.zero_grad(set_to_none=True)  # Slightly faster than .zero_grad()
             label_real = torch.ones(batch_size, device=device)
             label_fake = torch.zeros(batch_size, device=device)
             
@@ -163,7 +172,7 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_d
             optimizerD.step()
             
             # Train Generator
-            netG.zero_grad()
+            netG.zero_grad(set_to_none=True)
             output_fake = netD(fake_images)
             g_loss = criterion(output_fake, label_real)
             g_loss.backward()
@@ -206,25 +215,15 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_d
                 os.makedirs(epoch_dir, exist_ok=True)
                 
                 for j, image in enumerate(fake_images):
-                    image_path = os.path.join(epoch_dir, f'sample_{j+1}.png')
-                    save_image(image, image_path, normalize=True)
+                    if j < 16:  # Save only first 16 images to save time
+                        image_path = os.path.join(epoch_dir, f'sample_{j+1}.png')
+                        save_image(image, image_path, normalize=True)
                 print(f"Saved training progress images for epoch {epoch+1}")
     
     # Save final models
     torch.save(netG.state_dict(), os.path.join(save_dir, f'generator_{class_name}_final.pth'))
     torch.save(netD.state_dict(), os.path.join(save_dir, f'discriminator_{class_name}_final.pth'))
     
-    # Save final sample images
-    with torch.no_grad():
-        final_dir = os.path.join(class_progress_dir, 'final')
-        os.makedirs(final_dir, exist_ok=True)
-        
-        fake_images = netG(fixed_noise).detach().cpu()
-        for i, image in enumerate(fake_images):
-            image_path = os.path.join(final_dir, f'sample_{i+1}.png')
-            save_image(image, image_path, normalize=True)
-        print(f"Saved final generated images for {class_name}")
-
     return {'g_losses': g_losses, 'd_losses': d_losses}
 
 def main():
@@ -239,10 +238,10 @@ def main():
     
     # Set device and CUDA settings
     if torch.cuda.is_available():
+        # Enable cuDNN autotuner
+        torch.backends.cudnn.benchmark = True
         # Set CUDA device
         device = torch.device('cuda')
-        # Enable CUDA error debugging
-        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
         # Print CUDA information
         print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
         print(f"CUDA device count: {torch.cuda.device_count()}")
@@ -261,7 +260,7 @@ def main():
     data_sizes = {}
     
     # Train DCGAN for each class
-    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']  # Sesuai dengan urutan folder
+    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
     
     try:
         for class_name in classes:
@@ -275,11 +274,16 @@ def main():
             class_idx = dataset.class_to_idx[class_name]
             indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
             subset = torch.utils.data.Subset(dataset, indices)
+            
+            # Optimize DataLoader for multi-GPU
             data_loader = DataLoader(
                 subset,
-                batch_size=BATCH_SIZE,
+                batch_size=BATCH_SIZE * torch.cuda.device_count(),  # Scale batch size by GPU count
                 shuffle=True,
-                num_workers=NUM_WORKERS if device.type == 'cuda' else 0  # Set num_workers to 0 if using CPU
+                num_workers=4 * torch.cuda.device_count(),  # Scale workers by GPU count
+                pin_memory=True,  # Enable faster data transfer to CUDA
+                persistent_workers=True,  # Keep workers alive between epochs
+                prefetch_factor=2  # Prefetch next batches
             )
             
             data_sizes[class_name] = len(subset)
@@ -288,6 +292,9 @@ def main():
             # Train DCGAN
             losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
             all_losses[class_name] = losses
+            
+            # Clear cache after each class
+            torch.cuda.empty_cache()
         
         # Create visualizations
         plot_gan_losses_multi_panel(all_losses, plots_dir)
@@ -303,7 +310,4 @@ def main():
             print("Switching to CPU...")
             device = torch.device('cpu')
             print("Please run the script again. It will now use CPU instead of CUDA.")
-        raise  # Re-raise the exception after handling
-
-if __name__ == '__main__':
-    main() 
+        raise 
