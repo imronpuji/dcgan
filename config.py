@@ -6,7 +6,7 @@ RESULTS_DIR = 'results'
 
 # Dataset parameters
 IMG_SIZE = 224
-BATCH_SIZE = 32
+BATCH_SIZE = 256
 NUM_WORKERS = 4
 TRAIN_SPLIT = 0.7
 VAL_SPLIT = 0.15
