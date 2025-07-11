@@ -8,6 +8,8 @@ from torchvision.utils import save_image
 import time
 import os
 from torchvision.datasets import ImageFolder
+import matplotlib.pyplot as plt
+import numpy as np
 
 # Data preprocessing
 class DataPreprocessing:
@@ -105,7 +107,7 @@ class Discriminator(nn.Module):
     def forward(self, x):
         return self.main(x).squeeze(1)
 
-def train_dcgan(data_loader, device, nz=100, num_epochs=200):
+def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     # Create the generator and discriminator
     netG = Generator(latent_dim=nz).to(device)
     netD = Discriminator().to(device)
@@ -120,11 +122,25 @@ def train_dcgan(data_loader, device, nz=100, num_epochs=200):
     optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0002, betas=(0.5, 0.999))
     optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0002, betas=(0.5, 0.999))
     
+    # Create directories for saving
+    os.makedirs(f"generated_images/{class_name}", exist_ok=True)
+    os.makedirs(f"models/{class_name}", exist_ok=True)
+    os.makedirs("plots", exist_ok=True)
+    
+    # Lists to store losses
+    g_losses = []
+    d_losses = []
+    
     # Training Loop
-    print("Starting Training Loop...")
+    print(f"Starting Training Loop for {class_name}...")
     
     for epoch in range(num_epochs):
         print(f"Epoch {epoch+1}/{num_epochs}")
+        
+        # For tracking epoch losses
+        g_loss_epoch = 0.0
+        d_loss_epoch = 0.0
+        n_batch = 0
         
         for i, data in enumerate(data_loader, 0):
             batch_size = data[0].size(0)
@@ -137,18 +153,15 @@ def train_dcgan(data_loader, device, nz=100, num_epochs=200):
             optimizerD.zero_grad()
             real_output = netD(real_cpu)
             d_real_loss = criterion(real_output, real_labels)
-            print(f"Discriminator real loss: {d_real_loss.item():.4f}")
             
             noise = torch.randn(batch_size, nz, 1, 1, device=device)
             fake = netG(noise)
             fake_output = netD(fake.detach())
             d_fake_loss = criterion(fake_output, fake_labels)
-            print(f"Discriminator fake loss: {d_fake_loss.item():.4f}")
             
             d_loss = d_real_loss + d_fake_loss
             d_loss.backward()
             optimizerD.step()
-            print(f"Discriminator total loss: {d_loss.item():.4f}")
             
             # Train generator
             optimizerG.zero_grad()
@@ -156,24 +169,239 @@ def train_dcgan(data_loader, device, nz=100, num_epochs=200):
             g_loss = criterion(fake_output, real_labels)
             g_loss.backward()
             optimizerG.step()
-            print(f"Generator loss: {g_loss.item():.4f}")
+            
+            # Record losses
+            g_loss_epoch += g_loss.item()
+            d_loss_epoch += d_loss.item()
+            n_batch += 1
             
             if (i+1) % 100 == 0:
-                print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], D_Loss: {d_loss.item():.4f}, G_Loss: {g_loss.item():.4f}')
+                print(f'{class_name} - Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], D_Loss: {d_loss.item():.4f}, G_Loss: {g_loss.item():.4f}')
         
+        # Calculate average losses for the epoch
+        avg_g_loss = g_loss_epoch / n_batch
+        avg_d_loss = d_loss_epoch / n_batch
+        g_losses.append(avg_g_loss)
+        d_losses.append(avg_d_loss)
+        
+        # Save images and models every 5 epochs
         if (epoch+1) % 5 == 0:
             with torch.no_grad():
                 fake = netG(fixed_noise)
                 save_image(fake.detach(),
-                         f'generated_images/fake_samples_epoch_{epoch+1}.png',
+                         f'generated_images/{class_name}/fake_samples_epoch_{epoch+1}.png',
                          normalize=True)
-                print(f"Saved generated images for epoch {epoch+1}")
+                print(f"Saved generated images for {class_name} epoch {epoch+1}")
+                
+                # Save model checkpoints
+                torch.save({
+                    'epoch': epoch,
+                    'generator_state_dict': netG.state_dict(),
+                    'discriminator_state_dict': netD.state_dict(),
+                    'g_optimizer_state_dict': optimizerG.state_dict(),
+                    'd_optimizer_state_dict': optimizerD.state_dict(),
+                    'g_losses': g_losses,
+                    'd_losses': d_losses
+                }, f'models/{class_name}/checkpoint_epoch_{epoch+1}.pth')
+                
+                # Plot and save loss curves
+                plot_losses(g_losses, d_losses, class_name, epoch+1)
     
-    return netG
+    # Save final models
+    torch.save(netG.state_dict(), f'models/{class_name}/generator_final.pth')
+    torch.save(netD.state_dict(), f'models/{class_name}/discriminator_final.pth')
+    
+    # Save final loss curves
+    plot_losses(g_losses, d_losses, class_name, num_epochs, is_final=True)
+    
+    return netG, g_losses, d_losses
+
+def plot_losses(g_losses, d_losses, class_name, epoch, is_final=False):
+    # Create figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Plot losses
+    epochs = range(1, len(g_losses) + 1)
+    
+    # Generator Loss subplot
+    ax1.plot(epochs, g_losses, 'b-', label='Generator Loss', linewidth=2)
+    ax1.set_title(f'Generator Loss Progress - {class_name}')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # Add min, max, mean annotations for Generator
+    min_g = min(g_losses)
+    max_g = max(g_losses)
+    mean_g = np.mean(g_losses)
+    ax1.annotate(f'Min: {min_g:.4f}\nMax: {max_g:.4f}\nMean: {mean_g:.4f}',
+                xy=(0.02, 0.98), xycoords='axes fraction',
+                bbox=dict(boxstyle='round', fc='w', ec='k', alpha=0.8),
+                verticalalignment='top')
+    
+    # Discriminator Loss subplot
+    ax2.plot(epochs, d_losses, 'r-', label='Discriminator Loss', linewidth=2)
+    ax2.set_title(f'Discriminator Loss Progress - {class_name}')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    # Add min, max, mean annotations for Discriminator
+    min_d = min(d_losses)
+    max_d = max(d_losses)
+    mean_d = np.mean(d_losses)
+    ax2.annotate(f'Min: {min_d:.4f}\nMax: {max_d:.4f}\nMean: {mean_d:.4f}',
+                xy=(0.02, 0.98), xycoords='axes fraction',
+                bbox=dict(boxstyle='round', fc='w', ec='k', alpha=0.8),
+                verticalalignment='top')
+    
+    # Add overall title
+    plt.suptitle(f'Training Progress for {class_name} (Epoch {epoch})', fontsize=14)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save plot
+    suffix = 'final' if is_final else f'epoch_{epoch}'
+    save_path = f'plots/{class_name}_losses_{suffix}.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"[INFO] Loss plot saved to {save_path}")
+
+def plot_comparative_losses(all_losses):
+    # Create figure with two subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 12))
+    
+    # Color map for different classes
+    colors = ['b', 'r', 'g', 'purple']
+    
+    # Plot Generator losses
+    ax1.set_title('Generator Losses Comparison', fontsize=12)
+    for (class_name, (g_losses, _)), color in zip(all_losses.items(), colors):
+        epochs = range(1, len(g_losses) + 1)
+        ax1.plot(epochs, g_losses, color=color, label=class_name, linewidth=2, alpha=0.7)
+        
+        # Add final loss value annotation
+        final_loss = g_losses[-1]
+        ax1.annotate(f'{final_loss:.4f}', 
+                    xy=(len(g_losses), final_loss),
+                    xytext=(5, 5), textcoords='offset points')
+    
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Generator Loss')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper right')
+    
+    # Plot Discriminator losses
+    ax2.set_title('Discriminator Losses Comparison', fontsize=12)
+    for (class_name, (_, d_losses)), color in zip(all_losses.items(), colors):
+        epochs = range(1, len(d_losses) + 1)
+        ax2.plot(epochs, d_losses, color=color, label=class_name, linewidth=2, alpha=0.7)
+        
+        # Add final loss value annotation
+        final_loss = d_losses[-1]
+        ax2.annotate(f'{final_loss:.4f}', 
+                    xy=(len(d_losses), final_loss),
+                    xytext=(5, 5), textcoords='offset points')
+    
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Discriminator Loss')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc='upper right')
+    
+    # Add overall title
+    plt.suptitle('Comparative Training Progress Across Classes', fontsize=14)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save plot with high resolution
+    save_path = 'plots/comparative_losses.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"[INFO] Comparative loss plot saved to {save_path}")
+
+def plot_training_summary(all_losses):
+    """Create a summary plot with key metrics for all classes"""
+    classes = list(all_losses.keys())
+    metrics = {
+        'Final G-Loss': [losses[0][-1] for losses in all_losses.values()],
+        'Final D-Loss': [losses[1][-1] for losses in all_losses.values()],
+        'Mean G-Loss': [np.mean(losses[0]) for losses in all_losses.values()],
+        'Mean D-Loss': [np.mean(losses[1]) for losses in all_losses.values()],
+        'Min G-Loss': [min(losses[0]) for losses in all_losses.values()],
+        'Min D-Loss': [min(losses[1]) for losses in all_losses.values()]
+    }
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=(15, 8))
+    
+    # Number of metrics and classes
+    n_metrics = len(metrics)
+    n_classes = len(classes)
+    
+    # Set up bar positions
+    bar_width = 0.15
+    index = np.arange(n_classes)
+    
+    # Plot bars for each metric
+    for i, (metric_name, values) in enumerate(metrics.items()):
+        position = index + i * bar_width
+        ax.bar(position, values, bar_width, label=metric_name, alpha=0.7)
+        
+        # Add value labels on top of bars
+        for j, value in enumerate(values):
+            ax.text(position[j], value, f'{value:.4f}', 
+                   ha='center', va='bottom', rotation=45)
+    
+    # Customize plot
+    ax.set_xlabel('Classes')
+    ax.set_ylabel('Loss Values')
+    ax.set_title('Training Summary Metrics by Class')
+    ax.set_xticks(index + bar_width * (n_metrics/2 - 0.5))
+    ax.set_xticklabels(classes)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # Adjust layout and save
+    plt.tight_layout()
+    save_path = 'plots/training_summary.png'
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"[INFO] Training summary plot saved to {save_path}")
+
+def load_class_data(preprocessor, data_path, class_name, batch_size=156):
+    # Load the entire dataset
+    dataset = ImageFolder(root=data_path, transform=preprocessor.transforms)
+    
+    # Get indices for the specific class
+    class_idx = dataset.class_to_idx[class_name]
+    indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
+    
+    # Create a subset for this class
+    subset = torch.utils.data.Subset(dataset, indices)
+    
+    # Create dataloader
+    data_loader = DataLoader(
+        subset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2
+    )
+    
+    print(f"[INFO] Found {len(subset)} images for class {class_name}")
+    return data_loader
 
 def main():
-    # Create output directory
+    # Create output directories
     os.makedirs("generated_images", exist_ok=True)
+    os.makedirs("models", exist_ok=True)
+    os.makedirs("plots", exist_ok=True)
     
     # Set device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -181,13 +409,35 @@ def main():
     
     # Initialize data preprocessing
     preprocessor = DataPreprocessing()
-    data_loader = preprocessor.load_data('./data')
     
-    # Train DCGAN
-    print("\n[INFO] Training DCGAN for data augmentation...")
-    generator = train_dcgan(data_loader, device)
+    # Define classes
+    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
     
-    print("[INFO] Training completed")
+    # Dictionary to store all losses
+    all_losses = {}
+    
+    # Train DCGAN for each class
+    for class_name in classes:
+        print(f"\n[INFO] Processing class: {class_name}")
+        
+        # Load data for this class
+        data_loader = load_class_data(preprocessor, './data', class_name)
+        
+        # Train DCGAN
+        print(f"[INFO] Training DCGAN for {class_name}...")
+        generator, g_losses, d_losses = train_dcgan(data_loader, class_name, device)
+        all_losses[class_name] = (g_losses, d_losses)
+        
+        print(f"[INFO] Training completed for {class_name}")
+        
+        # Clear GPU memory
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    
+    # Generate all summary plots
+    plot_comparative_losses(all_losses)
+    plot_training_summary(all_losses)
+    print("\n[INFO] All training completed")
 
 if __name__ == '__main__':
     main()
