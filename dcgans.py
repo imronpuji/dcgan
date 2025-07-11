@@ -118,7 +118,7 @@ class Discriminator(nn.Module):
         )
 
     def forward(self, x):
-        return self.main(x).view(x.size(0))
+        return self.main(x).squeeze()
 
 def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
     # Create the generator and discriminator with optimized settings
@@ -126,7 +126,7 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
     netD = Discriminator().to(device)
     
     # Enable automatic mixed precision for faster training
-    scaler = torch.cuda.amp.GradScaler()
+    scaler = torch.amp.GradScaler()
     
     # Enable cuDNN benchmarking and deterministic mode
     torch.backends.cudnn.benchmark = True
@@ -173,7 +173,7 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
             # Train discriminator with mixed precision
             optimizerD.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type='cuda'):
                 # Add noise to discriminator inputs
                 real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
                 real_output = netD(real_cpu_noisy)
@@ -193,7 +193,7 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
             # Train generator with mixed precision
             optimizerG.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast(device_type='cuda'):
                 fake_output = netD(fake)
                 g_loss = criterion(fake_output, real_labels)
             
