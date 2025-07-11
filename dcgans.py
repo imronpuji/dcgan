@@ -3,7 +3,6 @@ import torch.nn as nn
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 import torchvision.models as models
-from efficientnet_pytorch import EfficientNet
 from torchvision.utils import save_image
 import time
 import os
@@ -54,7 +53,6 @@ class DataPreprocessing:
 class Generator(nn.Module):
     def __init__(self, latent_dim=100):
         super(Generator, self).__init__()
-        
         self.main = nn.Sequential(
             # Input is latent_dim x 1 x 1
             nn.ConvTranspose2d(latent_dim, 1024, 4, 1, 0, bias=False),
@@ -65,16 +63,19 @@ class Generator(nn.Module):
             nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
+            nn.Dropout2d(0.15),
             
             # State size: 512 x 8 x 8
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
+            nn.Dropout2d(0.15),
             
             # State size: 256 x 16 x 16
             nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
+            nn.Dropout2d(0.15),
             
             # State size: 128 x 32 x 32
             nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
@@ -94,39 +95,32 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
-        
         self.main = nn.Sequential(
             # Input size: 3 x 128 x 128
-            nn.utils.spectral_norm(
-                nn.Conv2d(3, 64, 4, 2, 1, bias=False)
-            ),
+            nn.utils.spectral_norm(nn.Conv2d(3, 64, 4, 2, 1, bias=False)),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
 
             # State size: 64 x 64 x 64
-            nn.utils.spectral_norm(
-                nn.Conv2d(64, 128, 4, 2, 1, bias=False)
-            ),
+            nn.utils.spectral_norm(nn.Conv2d(64, 128, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
             # State size: 128 x 32 x 32
-            nn.utils.spectral_norm(
-                nn.Conv2d(128, 256, 4, 2, 1, bias=False)
-            ),
+            nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
             # State size: 256 x 16 x 16
-            nn.utils.spectral_norm(
-                nn.Conv2d(256, 512, 4, 2, 1, bias=False)
-            ),
+            nn.utils.spectral_norm(nn.Conv2d(256, 512, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
             # State size: 512 x 8 x 8
-            nn.utils.spectral_norm(
-                nn.Conv2d(512, 1024, 4, 2, 1, bias=False)
-            ),
+            nn.utils.spectral_norm(nn.Conv2d(512, 1024, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2, inplace=True),
             
@@ -159,8 +153,8 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
 
     # Setup optimizers with adjusted learning rates and betas
-    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0005, betas=(0.5, 0.999))
-    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0005, betas=(0.5, 0.999))
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0001, betas=(0.5, 0.999))
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0001, betas=(0.5, 0.999))
     
     # Create directories for saving
     os.makedirs(f"generated_images/{class_name}", exist_ok=True)
