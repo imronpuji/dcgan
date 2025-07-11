@@ -1,87 +1,20 @@
-import torch
+import torch 
 import torch.nn as nn
-import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
-from torchvision.datasets import ImageFolder
+import torchvision.models as models
+from efficientnet_pytorch import EfficientNet
 from torchvision.utils import save_image
+import time
 import os
-from config import *
-from visualization import plot_gan_losses_multi_panel, plot_gan_losses_comparative, create_summary_table
+from torchvision.datasets import ImageFolder
 
-class Generator(nn.Module):
-    def __init__(self, latent_dim=LATENT_DIM, feature_dim=GEN_FEATURES):
-        super(Generator, self).__init__()
-        
-        self.main = nn.Sequential(
-            # Initial block
-            nn.ConvTranspose2d(latent_dim, feature_dim * 8, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(feature_dim * 8),
-            nn.ReLU(True),
-            
-            # Upsampling blocks
-            nn.ConvTranspose2d(feature_dim * 8, feature_dim * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim * 4),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(feature_dim * 4, feature_dim * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim * 2),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(feature_dim * 2, feature_dim, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim),
-            nn.ReLU(True),
-            
-            # Output block
-            nn.ConvTranspose2d(feature_dim, 3, 4, 2, 1, bias=False),
-            nn.Tanh()
-        )
-
-    def forward(self, x):
-        return self.main(x)
-
-class Discriminator(nn.Module):
-    def __init__(self, feature_dim=DISC_FEATURES):
-        super(Discriminator, self).__init__()
-        
-        self.conv_layers = nn.Sequential(
-            # Initial block
-            nn.Conv2d(3, feature_dim, 4, 2, 1, bias=False),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            # Downsampling blocks
-            nn.Conv2d(feature_dim, feature_dim * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim * 2),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            nn.Conv2d(feature_dim * 2, feature_dim * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            nn.Conv2d(feature_dim * 4, feature_dim * 8, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(feature_dim * 8),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        
-        # Calculate the size of flattened features
-        self.flatten = nn.Flatten()
-        # Adaptive average pooling to handle different input sizes
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
-        # Final classification layer
-        self.final = nn.Sequential(
-            nn.Linear(feature_dim * 8, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        x = self.conv_layers(x)
-        x = self.adaptive_pool(x)
-        x = self.flatten(x)
-        x = self.final(x)
-        return x.squeeze(1)  # Ensure output shape is [batch_size]
-
+# Data preprocessing
 class DataPreprocessing:
-    def __init__(self, image_size=IMG_SIZE):
+    def __init__(self, image_size=64): # Changed image size to 244x244
+        print("\n[INFO] Initializing Data Preprocessing...")
+        self.image_size = image_size
+        
         self.transforms = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.RandomHorizontalFlip(),
@@ -89,225 +22,172 @@ class DataPreprocessing:
             transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
         ])
 
-    def load_data(self, data_path, class_name):
-        # Create a subset of ImageFolder that only includes the specified class
-        full_dataset = ImageFolder(root=data_path, transform=self.transforms)
+    def load_data(self, data_path, batch_size=32):
+        print(f"\n[INFO] Loading dataset from: {data_path}")
         
-        # Get the index of the specified class
-        try:
-            class_idx = full_dataset.class_to_idx[class_name]
-        except KeyError:
-            raise ValueError(f"Class {class_name} not found in dataset. Available classes: {list(full_dataset.class_to_idx.keys())}")
+        if not os.path.exists(data_path):
+            raise RuntimeError(f"Dataset path {data_path} does not exist")
         
-        # Filter indices for the specified class
-        indices = [i for i, (_, label) in enumerate(full_dataset.samples) if label == class_idx]
+        # Load the entire dataset (without train/test split)
+        dataset = ImageFolder(root=data_path, transform=self.transforms)
+        print(f"[INFO] Found {len(dataset)} images")
         
-        # Create a subset using the filtered indices
-        subset = torch.utils.data.Subset(full_dataset, indices)
-        
-        return DataLoader(
-            subset,
-            batch_size=BATCH_SIZE,
+        data_loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
             shuffle=True,
-            num_workers=NUM_WORKERS
+            num_workers=2
+        )
+        
+        # Print class distribution
+        print("\n[INFO] Dataset Class Distribution:")
+        for idx, class_name in enumerate(dataset.classes):
+            n_samples = len([x for x, y in dataset.samples if y == idx])
+            print(f"Class {idx}: {class_name} - {n_samples} images")
+            
+        return data_loader
+
+# Generator
+class Generator(nn.Module):
+    def __init__(self, latent_dim=100):
+        super(Generator, self).__init__()
+        
+        self.main = nn.Sequential(
+            nn.ConvTranspose2d(latent_dim, 512, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(64, 3, 4, 2, 1, bias=False),
+            nn.Tanh()
         )
 
-def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_dir):
-    # Initialize networks and move to GPU
-    netG = Generator().to(device)
+    def forward(self, x):
+        return self.main(x)
+
+# Discriminator
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        self.main = nn.Sequential(
+            nn.Conv2d(3, 64, 4, 2, 1, bias=False),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(64, 128, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(128, 256, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(256, 512, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            nn.Conv2d(512, 1, 4, 1, 0, bias=False),
+            nn.Flatten(),
+            nn.Linear(1, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        return self.main(x).squeeze(1)
+
+def train_dcgan(data_loader, device, nz=100, num_epochs=200):
+    # Create the generator and discriminator
+    netG = Generator(latent_dim=nz).to(device)
     netD = Discriminator().to(device)
     
-    # Enable multi-GPU
-    if torch.cuda.device_count() > 1:
-        print(f"Using {torch.cuda.device_count()} GPUs!")
-        netG = nn.DataParallel(netG)
-        netD = nn.DataParallel(netD)
-    
-    # Setup optimizers with better hyperparameters
-    optimizerD = optim.Adam(netD.parameters(), lr=GAN_LEARNING_RATE, betas=(GAN_BETA1, 0.999))
-    optimizerG = optim.Adam(netG.parameters(), lr=GAN_LEARNING_RATE, betas=(GAN_BETA1, 0.999))
-    
-    criterion = nn.BCELoss()
-    
-    # Lists to store losses
-    g_losses = []
-    d_losses = []
+    # Initialize MSELoss function
+    criterion = nn.MSELoss()
 
-    # Create directories for saving training progress
-    class_progress_dir = os.path.join(generated_dir, f'{class_name}_training_progress')
-    os.makedirs(class_progress_dir, exist_ok=True)
+    # Create batch of latent vectors for visualization
+    fixed_noise = torch.randn(64, nz, 1, 1, device=device)
+
+    # Setup optimizers
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0002, betas=(0.5, 0.999))
     
-    # Fixed noise for tracking progress
-    fixed_noise = torch.randn(BATCH_SIZE, LATENT_DIM, 1, 1, device=device)
+    # Training Loop
+    print("Starting Training Loop...")
     
-    print(f"\nStarting DCGAN training for {class_name}")
-    
-    # Enable cuDNN autotuner
-    torch.backends.cudnn.benchmark = True
-    
-    for epoch in range(GAN_EPOCHS):
-        g_loss_epoch = 0.0
-        d_loss_epoch = 0.0
-        num_batches = 0
+    for epoch in range(num_epochs):
+        print(f"Epoch {epoch+1}/{num_epochs}")
         
-        for i, (real_images, _) in enumerate(data_loader):
-            batch_size = real_images.size(0)
-            real_images = real_images.to(device, non_blocking=True)  # Enable async data transfer
+        for i, data in enumerate(data_loader, 0):
+            batch_size = data[0].size(0)
             
-            # Train Discriminator
-            netD.zero_grad(set_to_none=True)  # Slightly faster than .zero_grad()
-            label_real = torch.ones(batch_size, device=device)
-            label_fake = torch.zeros(batch_size, device=device)
+            # Train discriminator
+            real_labels = torch.ones(batch_size, device=device)
+            fake_labels = torch.zeros(batch_size, device=device)
             
-            output_real = netD(real_images)
-            d_loss_real = criterion(output_real, label_real)
+            real_cpu = data[0].to(device)
+            optimizerD.zero_grad()
+            real_output = netD(real_cpu)
+            d_real_loss = criterion(real_output, real_labels)
+            print(f"Discriminator real loss: {d_real_loss.item():.4f}")
             
-            noise = torch.randn(batch_size, LATENT_DIM, 1, 1, device=device)
-            fake_images = netG(noise)
-            output_fake = netD(fake_images.detach())
-            d_loss_fake = criterion(output_fake, label_fake)
+            noise = torch.randn(batch_size, nz, 1, 1, device=device)
+            fake = netG(noise)
+            fake_output = netD(fake.detach())
+            d_fake_loss = criterion(fake_output, fake_labels)
+            print(f"Discriminator fake loss: {d_fake_loss.item():.4f}")
             
-            d_loss = d_loss_real + d_loss_fake
+            d_loss = d_real_loss + d_fake_loss
             d_loss.backward()
             optimizerD.step()
+            print(f"Discriminator total loss: {d_loss.item():.4f}")
             
-            # Train Generator
-            netG.zero_grad(set_to_none=True)
-            output_fake = netD(fake_images)
-            g_loss = criterion(output_fake, label_real)
+            # Train generator
+            optimizerG.zero_grad()
+            fake_output = netD(fake)
+            g_loss = criterion(fake_output, real_labels)
             g_loss.backward()
             optimizerG.step()
+            print(f"Generator loss: {g_loss.item():.4f}")
             
-            # Record losses
-            g_loss_epoch += g_loss.item()
-            d_loss_epoch += d_loss.item()
-            num_batches += 1
-            
-            if i % 100 == 0:
-                print(f'[{epoch}/{GAN_EPOCHS}][{i}/{len(data_loader)}] '
-                      f'Loss_D: {d_loss.item():.4f} Loss_G: {g_loss.item():.4f}')
+            if (i+1) % 100 == 0:
+                print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], D_Loss: {d_loss.item():.4f}, G_Loss: {g_loss.item():.4f}')
         
-        # Average losses for the epoch
-        g_losses.append(g_loss_epoch / num_batches)
-        d_losses.append(d_loss_epoch / num_batches)
-        
-        # Save training progress every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            print(f'Epoch [{epoch+1}/{GAN_EPOCHS}] - '
-                  f'G_Loss: {g_losses[-1]:.4f} D_Loss: {d_losses[-1]:.4f}')
-            
-            # Save model checkpoints
-            checkpoint = {
-                'epoch': epoch,
-                'generator_state_dict': netG.state_dict(),
-                'discriminator_state_dict': netD.state_dict(),
-                'g_optimizer_state_dict': optimizerG.state_dict(),
-                'd_optimizer_state_dict': optimizerD.state_dict(),
-                'g_losses': g_losses,
-                'd_losses': d_losses
-            }
-            torch.save(checkpoint, os.path.join(save_dir, f'checkpoint_{class_name}_epoch_{epoch+1}.pth'))
-            
-            # Generate and save sample images
+        if (epoch+1) % 5 == 0:
             with torch.no_grad():
-                fake_images = netG(fixed_noise).detach().cpu()
-                epoch_dir = os.path.join(class_progress_dir, f'epoch_{epoch+1}')
-                os.makedirs(epoch_dir, exist_ok=True)
-                
-                for j, image in enumerate(fake_images):
-                    if j < 16:  # Save only first 16 images to save time
-                        image_path = os.path.join(epoch_dir, f'sample_{j+1}.png')
-                        save_image(image, image_path, normalize=True)
-                print(f"Saved training progress images for epoch {epoch+1}")
+                fake = netG(fixed_noise)
+                save_image(fake.detach(),
+                         f'generated_images/fake_samples_epoch_{epoch+1}.png',
+                         normalize=True)
+                print(f"Saved generated images for epoch {epoch+1}")
     
-    # Save final models
-    torch.save(netG.state_dict(), os.path.join(save_dir, f'generator_{class_name}_final.pth'))
-    torch.save(netD.state_dict(), os.path.join(save_dir, f'discriminator_{class_name}_final.pth'))
-    
-    return {'g_losses': g_losses, 'd_losses': d_losses}
+    return netG
 
 def main():
-    # Create necessary directories
-    os.makedirs(RESULTS_DIR, exist_ok=True)
-    models_dir = os.path.join(RESULTS_DIR, 'models')
-    plots_dir = os.path.join(RESULTS_DIR, 'plots')
-    generated_dir = os.path.join(RESULTS_DIR, 'generated_images')
-    os.makedirs(models_dir, exist_ok=True)
-    os.makedirs(plots_dir, exist_ok=True)
-    os.makedirs(generated_dir, exist_ok=True)
+    # Create output directory
+    os.makedirs("generated_images", exist_ok=True)
     
-    # Set device and CUDA settings
-    if torch.cuda.is_available():
-        # Enable cuDNN autotuner
-        torch.backends.cudnn.benchmark = True
-        # Set CUDA device
-        device = torch.device('cuda')
-        # Print CUDA information
-        print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
-        print(f"CUDA device count: {torch.cuda.device_count()}")
-        print(f"CUDA version: {torch.version.cuda}")
-        # Clear CUDA cache
-        torch.cuda.empty_cache()
-    else:
-        device = torch.device('cpu')
-        print("CUDA is not available. Using CPU instead.")
+    # Set device
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Using device: {device}")
     
-    # Initialize preprocessing
+    # Initialize data preprocessing
     preprocessor = DataPreprocessing()
+    data_loader = preprocessor.load_data('./data')
     
-    # Dictionary to store losses for all classes
-    all_losses = {}
-    data_sizes = {}
+    # Train DCGAN
+    print("\n[INFO] Training DCGAN for data augmentation...")
+    generator = train_dcgan(data_loader, device)
     
-    # Train DCGAN for each class
-    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
-    
-    try:
-        for class_name in classes:
-            print(f"\nProcessing {class_name}")
-            # Load data directly from the class folder
-            dataset = ImageFolder(
-                root=BASE_DIR,
-                transform=preprocessor.transforms
-            )
-            # Get indices for current class
-            class_idx = dataset.class_to_idx[class_name]
-            indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
-            subset = torch.utils.data.Subset(dataset, indices)
-            
-            # Optimize DataLoader for multi-GPU
-            data_loader = DataLoader(
-                subset,
-                batch_size=BATCH_SIZE * torch.cuda.device_count(),  # Scale batch size by GPU count
-                shuffle=True,
-                num_workers=4 * torch.cuda.device_count(),  # Scale workers by GPU count
-                pin_memory=True,  # Enable faster data transfer to CUDA
-                persistent_workers=True,  # Keep workers alive between epochs
-                prefetch_factor=2  # Prefetch next batches
-            )
-            
-            data_sizes[class_name] = len(subset)
-            print(f"Found {data_sizes[class_name]} images for {class_name}")
-            
-            # Train DCGAN
-            losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
-            all_losses[class_name] = losses
-            
-            # Clear cache after each class
-            torch.cuda.empty_cache()
-        
-        # Create visualizations
-        plot_gan_losses_multi_panel(all_losses, plots_dir)
-        plot_gan_losses_comparative(all_losses, plots_dir)
-        create_summary_table(all_losses, data_sizes, plots_dir)
-        
-        print("\nTraining complete! Check the results directory for visualizations and models.")
-    
-    except RuntimeError as e:
-        if "CUDA" in str(e):
-            print("\nCUDA error detected. Trying to recover...")
-            torch.cuda.empty_cache()
-            print("Switching to CPU...")
-            device = torch.device('cpu')
-            print("Please run the script again. It will now use CPU instead of CUDA.")
-        raise 
+    print("[INFO] Training completed")
+
+if __name__ == '__main__':
+    main()
