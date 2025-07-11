@@ -62,14 +62,14 @@ class Discriminator(nn.Module):
             nn.BatchNorm2d(feature_dim * 8),
             nn.LeakyReLU(0.2, inplace=True),
             
-            # Output block
-            nn.Conv2d(feature_dim * 8, 1, 4, 1, 0, bias=False),
+            # Output block - flatten and dense layer
+            nn.Flatten(),
+            nn.Linear(feature_dim * 8 * 4 * 4, 1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        output = self.main(x)
-        return output.view(x.size(0))  # Reshape to [batch_size]
+        return self.main(x).squeeze()
 
 class DataPreprocessing:
     def __init__(self, image_size=IMG_SIZE):
