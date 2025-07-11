@@ -5,7 +5,7 @@ BASE_DIR = 'data'
 RESULTS_DIR = 'results'
 
 # Dataset parameters
-IMG_SIZE = 224
+IMG_SIZE = 64  # Changed from previous size to 64x64
 BATCH_SIZE = 156
 NUM_WORKERS = 4
 TRAIN_SPLIT = 0.7

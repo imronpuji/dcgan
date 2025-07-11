@@ -13,7 +13,7 @@ import argparse
 
 # Data preprocessing
 class DataPreprocessing:
-    def __init__(self, image_size=64):  # Changed default from IMG_SIZE to 64
+    def __init__(self, image_size=128): # Changed image size from 64 to 128
         print("\n[INFO] Initializing Data Preprocessing...")
         self.image_size = image_size
         
