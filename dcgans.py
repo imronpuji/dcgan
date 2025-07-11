@@ -60,23 +60,16 @@ class Discriminator(nn.Module):
             
             nn.Conv2d(feature_dim * 4, feature_dim * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(feature_dim * 8),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.LeakyReLU(0.2, inplace=True),
+            
+            # Final convolution layer
+            nn.Conv2d(feature_dim * 8, 1, 4, 1, 0, bias=False),
+            nn.Sigmoid()
         )
-        
-        # Calculate the size of flattened features
-        self.flatten = nn.Flatten()
-        # For 64x64 input images:
-        # After 4 conv layers with stride 2: 64 -> 32 -> 16 -> 8 -> 4
-        # Features: feature_dim * 8 * 4 * 4
-        self.linear = nn.Linear(feature_dim * 8 * 4 * 4, 1)
-        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = self.conv_layers(x)
-        x = self.flatten(x)
-        x = self.linear(x)
-        x = self.sigmoid(x)
-        return x.squeeze(1)
+        return x.squeeze()
 
 class DataPreprocessing:
     def __init__(self, image_size=IMG_SIZE):
