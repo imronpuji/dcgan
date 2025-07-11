@@ -134,7 +134,7 @@ class Discriminator(nn.Module):
     def forward(self, x):
         return self.main(x).squeeze(1)
 
-def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
+def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
     # Create the generator and discriminator with optimized settings
     netG = Generator(latent_dim=nz).to(device)
     netD = Discriminator().to(device)
