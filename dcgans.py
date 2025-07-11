@@ -96,43 +96,37 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
         self.main = nn.Sequential(
-            # Input size: 3 x 128 x 128
-            nn.utils.spectral_norm(nn.Conv2d(3, 64, 4, 2, 1, bias=False)),
+            # Input: 3 x 64 x 64
+            nn.utils.spectral_norm(nn.Conv2d(3, 64, 4, 2, 1, bias=False)),  # 64 -> 32
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
 
-            # State size: 64 x 64 x 64
-            nn.utils.spectral_norm(nn.Conv2d(64, 128, 4, 2, 1, bias=False)),
+            nn.utils.spectral_norm(nn.Conv2d(64, 128, 4, 2, 1, bias=False)), # 32 -> 16
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
-            
-            # State size: 128 x 32 x 32
-            nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1, bias=False)),
+
+            nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1, bias=False)), # 16 -> 8
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
-            
-            # State size: 256 x 16 x 16
-            nn.utils.spectral_norm(nn.Conv2d(256, 512, 4, 2, 1, bias=False)),
+
+            nn.utils.spectral_norm(nn.Conv2d(256, 512, 4, 2, 1, bias=False)), # 8 -> 4
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
-            
-            # State size: 512 x 8 x 8
-            nn.utils.spectral_norm(nn.Conv2d(512, 1024, 4, 2, 1, bias=False)),
+
+            nn.utils.spectral_norm(nn.Conv2d(512, 1024, 4, 2, 1, bias=False)), # 4 -> 2
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2, inplace=True),
-            
-            # State size: 1024 x 4 x 4
-            nn.Conv2d(1024, 1, 4, 1, 0, bias=False),
-            nn.Flatten(),
-            nn.Linear(1, 1),
+
+            # Final output block: 1024 x 2 x 2 -> 1 x 1 x 1
+            nn.Conv2d(1024, 1, 2, 1, 0, bias=False), # 2 -> 1
             nn.Sigmoid()
         )
 
     def forward(self, x):
-        return self.main(x).squeeze(1)
+        return self.main(x).view(-1)
 
 def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
     # Create the generator and discriminator with optimized settings
@@ -510,3 +504,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
