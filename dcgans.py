@@ -10,6 +10,7 @@ import os
 from torchvision.datasets import ImageFolder
 import matplotlib.pyplot as plt
 import numpy as np
+import argparse
 
 # Data preprocessing
 class DataPreprocessing:
@@ -158,8 +159,8 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
 
     # Setup optimizers with adjusted learning rates and betas
-    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.00005, betas=(0.5, 0.999))
-    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.00005, betas=(0.5, 0.999))
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0005, betas=(0.5, 0.999))
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0005, betas=(0.5, 0.999))
     
     # Create directories for saving
     os.makedirs(f"generated_images/{class_name}", exist_ok=True)
@@ -174,8 +175,6 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     print(f"Starting Training Loop for {class_name}...")
     
     for epoch in range(num_epochs):
-        print(f"Epoch {epoch+1}/{num_epochs}")
-        
         # For tracking epoch losses
         g_loss_epoch = 0.0
         d_loss_epoch = 0.0
@@ -229,9 +228,6 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
             d_loss_epoch += d_loss.item()
             n_batch += 1
             
-            if (i+1) % 100 == 0:
-                print(f'{class_name} - Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(data_loader)}], D_Loss: {d_loss.item():.4f}, G_Loss: {g_loss.item():.4f}')
-        
         # Calculate average losses for the epoch
         avg_g_loss = g_loss_epoch / n_batch
         avg_d_loss = d_loss_epoch / n_batch
@@ -240,6 +236,7 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
         
         # Save images and models every 5 epochs
         if (epoch+1) % 5 == 0:
+            print(f'{class_name} - Epoch [{epoch+1}/{num_epochs}], Avg D_Loss: {avg_d_loss:.4f}, Avg G_Loss: {avg_g_loss:.4f}')
             with torch.no_grad():
                 fake = netG(fixed_noise)
                 save_image(fake.detach(),
@@ -463,18 +460,39 @@ def main():
     # Set device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] Using device: {device}")
+
+    # --- Command-Line Argument Parsing ---
+    ALL_CLASSES = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
+    parser = argparse.ArgumentParser(
+        description="Train DCGANs for specific corn disease classes.",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    
+    for class_name in ALL_CLASSES:
+        parser.add_argument(f'--{class_name}', action='store_true', help=f'Train the model for the {class_name} class.')
+        
+    args = parser.parse_args()
+    
+    classes_to_train = []
+    for class_name in ALL_CLASSES:
+        if getattr(args, class_name):
+            classes_to_train.append(class_name)
+            
+    # If no specific classes are provided, train all
+    if not classes_to_train:
+        classes_to_train = ALL_CLASSES
+        
+    print(f"[INFO] Classes to be trained: {', '.join(classes_to_train)}")
+    # ------------------------------------
     
     # Initialize data preprocessing
     preprocessor = DataPreprocessing()
     
-    # Define classes
-    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
-    
     # Dictionary to store all losses
     all_losses = {}
     
-    # Train DCGAN for each class
-    for class_name in classes:
+    # Train DCGAN for each class selected
+    for class_name in classes_to_train:
         print(f"\n[INFO] Processing class: {class_name}")
         
         # Load data for this class
