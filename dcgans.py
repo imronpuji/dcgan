@@ -227,9 +227,21 @@ def main():
     os.makedirs(plots_dir, exist_ok=True)
     os.makedirs(generated_dir, exist_ok=True)
     
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    # Set device and CUDA settings
+    if torch.cuda.is_available():
+        # Set CUDA device
+        device = torch.device('cuda')
+        # Enable CUDA error debugging
+        os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+        # Print CUDA information
+        print(f"Using CUDA device: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA device count: {torch.cuda.device_count()}")
+        print(f"CUDA version: {torch.version.cuda}")
+        # Clear CUDA cache
+        torch.cuda.empty_cache()
+    else:
+        device = torch.device('cpu')
+        print("CUDA is not available. Using CPU instead.")
     
     # Initialize preprocessing
     preprocessor = DataPreprocessing()
@@ -241,37 +253,47 @@ def main():
     # Train DCGAN for each class
     classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']  # Sesuai dengan urutan folder
     
-    for class_name in classes:
-        print(f"\nProcessing {class_name}")
-        # Load data directly from the class folder
-        dataset = ImageFolder(
-            root=BASE_DIR,
-            transform=preprocessor.transforms
-        )
-        # Get indices for current class
-        class_idx = dataset.class_to_idx[class_name]
-        indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
-        subset = torch.utils.data.Subset(dataset, indices)
-        data_loader = DataLoader(
-            subset,
-            batch_size=BATCH_SIZE,
-            shuffle=True,
-            num_workers=NUM_WORKERS
-        )
+    try:
+        for class_name in classes:
+            print(f"\nProcessing {class_name}")
+            # Load data directly from the class folder
+            dataset = ImageFolder(
+                root=BASE_DIR,
+                transform=preprocessor.transforms
+            )
+            # Get indices for current class
+            class_idx = dataset.class_to_idx[class_name]
+            indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
+            subset = torch.utils.data.Subset(dataset, indices)
+            data_loader = DataLoader(
+                subset,
+                batch_size=BATCH_SIZE,
+                shuffle=True,
+                num_workers=NUM_WORKERS if device.type == 'cuda' else 0  # Set num_workers to 0 if using CPU
+            )
+            
+            data_sizes[class_name] = len(subset)
+            print(f"Found {data_sizes[class_name]} images for {class_name}")
+            
+            # Train DCGAN
+            losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
+            all_losses[class_name] = losses
         
-        data_sizes[class_name] = len(subset)
-        print(f"Found {data_sizes[class_name]} images for {class_name}")
+        # Create visualizations
+        plot_gan_losses_multi_panel(all_losses, plots_dir)
+        plot_gan_losses_comparative(all_losses, plots_dir)
+        create_summary_table(all_losses, data_sizes, plots_dir)
         
-        # Train DCGAN
-        losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
-        all_losses[class_name] = losses
+        print("\nTraining complete! Check the results directory for visualizations and models.")
     
-    # Create visualizations
-    plot_gan_losses_multi_panel(all_losses, plots_dir)
-    plot_gan_losses_comparative(all_losses, plots_dir)
-    create_summary_table(all_losses, data_sizes, plots_dir)
-    
-    print("\nTraining complete! Check the results directory for visualizations and models.")
+    except RuntimeError as e:
+        if "CUDA" in str(e):
+            print("\nCUDA error detected. Trying to recover...")
+            torch.cuda.empty_cache()
+            print("Switching to CPU...")
+            device = torch.device('cpu')
+            print("Please run the script again. It will now use CPU instead of CUDA.")
+        raise  # Re-raise the exception after handling
 
 if __name__ == '__main__':
     main() 
