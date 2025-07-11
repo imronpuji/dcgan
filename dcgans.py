@@ -69,7 +69,7 @@ class Discriminator(nn.Module):
 
     def forward(self, x):
         output = self.main(x)
-        return output.view(-1)
+        return output.view(x.size(0))  # Reshape to [batch_size]
 
 class DataPreprocessing:
     def __init__(self, image_size=IMG_SIZE):
