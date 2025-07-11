@@ -60,16 +60,25 @@ class Discriminator(nn.Module):
             
             nn.Conv2d(feature_dim * 4, feature_dim * 8, 4, 2, 1, bias=False),
             nn.BatchNorm2d(feature_dim * 8),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            # Final convolution layer
-            nn.Conv2d(feature_dim * 8, 1, 4, 1, 0, bias=False),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+        
+        # Calculate the size of flattened features
+        self.flatten = nn.Flatten()
+        # Adaptive average pooling to handle different input sizes
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Final classification layer
+        self.final = nn.Sequential(
+            nn.Linear(feature_dim * 8, 1),
             nn.Sigmoid()
         )
 
     def forward(self, x):
         x = self.conv_layers(x)
-        return x.squeeze()
+        x = self.adaptive_pool(x)
+        x = self.flatten(x)
+        x = self.final(x)
+        return x.squeeze(1)  # Ensure output shape is [batch_size]
 
 class DataPreprocessing:
     def __init__(self, image_size=IMG_SIZE):
