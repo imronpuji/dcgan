@@ -80,12 +80,23 @@ class DataPreprocessing:
         ])
 
     def load_data(self, data_path, class_name):
-        dataset = ImageFolder(
-            root=os.path.join(data_path, class_name),
-            transform=self.transforms
-        )
+        # Create a subset of ImageFolder that only includes the specified class
+        full_dataset = ImageFolder(root=data_path, transform=self.transforms)
+        
+        # Get the index of the specified class
+        try:
+            class_idx = full_dataset.class_to_idx[class_name]
+        except KeyError:
+            raise ValueError(f"Class {class_name} not found in dataset. Available classes: {list(full_dataset.class_to_idx.keys())}")
+        
+        # Filter indices for the specified class
+        indices = [i for i, (_, label) in enumerate(full_dataset.samples) if label == class_idx]
+        
+        # Create a subset using the filtered indices
+        subset = torch.utils.data.Subset(full_dataset, indices)
+        
         return DataLoader(
-            dataset,
+            subset,
             batch_size=BATCH_SIZE,
             shuffle=True,
             num_workers=NUM_WORKERS
@@ -228,12 +239,28 @@ def main():
     data_sizes = {}
     
     # Train DCGAN for each class
-    classes = ['Common_Rust', 'Gray_Leaf_Spot', 'Blight', 'Healthy']
+    classes = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']  # Sesuai dengan urutan folder
     
     for class_name in classes:
         print(f"\nProcessing {class_name}")
-        data_loader = preprocessor.load_data(BASE_DIR, class_name)
-        data_sizes[class_name] = len(data_loader.dataset)
+        # Load data directly from the class folder
+        dataset = ImageFolder(
+            root=BASE_DIR,
+            transform=preprocessor.transforms
+        )
+        # Get indices for current class
+        class_idx = dataset.class_to_idx[class_name]
+        indices = [i for i, (_, label) in enumerate(dataset.samples) if label == class_idx]
+        subset = torch.utils.data.Subset(dataset, indices)
+        data_loader = DataLoader(
+            subset,
+            batch_size=BATCH_SIZE,
+            shuffle=True,
+            num_workers=NUM_WORKERS
+        )
+        
+        data_sizes[class_name] = len(subset)
+        print(f"Found {data_sizes[class_name]} images for {class_name}")
         
         # Train DCGAN
         losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
