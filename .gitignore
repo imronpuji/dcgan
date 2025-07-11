@@ -1,0 +1,12 @@
+/data
+/venv
+/logs
+/models
+/notebooks
+/results
+/tests
+/docs
+/scripts
+/configs
+/utils
+/augmented_corn_leaf
