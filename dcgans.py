@@ -68,7 +68,8 @@ class Discriminator(nn.Module):
         )
 
     def forward(self, x):
-        return self.main(x).view(-1, 1).squeeze(1)
+        output = self.main(x)
+        return output.view(-1)
 
 class DataPreprocessing:
     def __init__(self, image_size=IMG_SIZE):
