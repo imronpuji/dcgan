@@ -4,6 +4,7 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 from torchvision.datasets import ImageFolder
+from torchvision.utils import save_image
 import os
 from config import *
 from visualization import plot_gan_losses_multi_panel, plot_gan_losses_comparative, create_summary_table
@@ -90,7 +91,7 @@ class DataPreprocessing:
             num_workers=NUM_WORKERS
         )
 
-def train_dcgan_for_class(class_name, data_loader, device, save_dir):
+def train_dcgan_for_class(class_name, data_loader, device, save_dir, generated_dir):
     # Initialize networks
     netG = Generator().to(device)
     netD = Discriminator().to(device)
@@ -104,6 +105,13 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir):
     # Lists to store losses
     g_losses = []
     d_losses = []
+
+    # Create directories for saving training progress
+    class_progress_dir = os.path.join(generated_dir, f'{class_name}_training_progress')
+    os.makedirs(class_progress_dir, exist_ok=True)
+    
+    # Fixed noise for tracking progress
+    fixed_noise = torch.randn(BATCH_SIZE, LATENT_DIM, 1, 1, device=device)
     
     print(f"\nStarting DCGAN training for {class_name}")
     
@@ -153,14 +161,49 @@ def train_dcgan_for_class(class_name, data_loader, device, save_dir):
         g_losses.append(g_loss_epoch / num_batches)
         d_losses.append(d_loss_epoch / num_batches)
         
+        # Save training progress every 10 epochs
         if (epoch + 1) % 10 == 0:
             print(f'Epoch [{epoch+1}/{GAN_EPOCHS}] - '
                   f'G_Loss: {g_losses[-1]:.4f} D_Loss: {d_losses[-1]:.4f}')
+            
+            # Save model checkpoints
+            checkpoint = {
+                'epoch': epoch,
+                'generator_state_dict': netG.state_dict(),
+                'discriminator_state_dict': netD.state_dict(),
+                'g_optimizer_state_dict': optimizerG.state_dict(),
+                'd_optimizer_state_dict': optimizerD.state_dict(),
+                'g_losses': g_losses,
+                'd_losses': d_losses
+            }
+            torch.save(checkpoint, os.path.join(save_dir, f'checkpoint_{class_name}_epoch_{epoch+1}.pth'))
+            
+            # Generate and save sample images
+            with torch.no_grad():
+                fake_images = netG(fixed_noise).detach().cpu()
+                epoch_dir = os.path.join(class_progress_dir, f'epoch_{epoch+1}')
+                os.makedirs(epoch_dir, exist_ok=True)
+                
+                for j, image in enumerate(fake_images):
+                    image_path = os.path.join(epoch_dir, f'sample_{j+1}.png')
+                    save_image(image, image_path, normalize=True)
+                print(f"Saved training progress images for epoch {epoch+1}")
     
-    # Save models
-    torch.save(netG.state_dict(), os.path.join(save_dir, f'generator_{class_name}.pth'))
-    torch.save(netD.state_dict(), os.path.join(save_dir, f'discriminator_{class_name}.pth'))
+    # Save final models
+    torch.save(netG.state_dict(), os.path.join(save_dir, f'generator_{class_name}_final.pth'))
+    torch.save(netD.state_dict(), os.path.join(save_dir, f'discriminator_{class_name}_final.pth'))
     
+    # Save final sample images
+    with torch.no_grad():
+        final_dir = os.path.join(class_progress_dir, 'final')
+        os.makedirs(final_dir, exist_ok=True)
+        
+        fake_images = netG(fixed_noise).detach().cpu()
+        for i, image in enumerate(fake_images):
+            image_path = os.path.join(final_dir, f'sample_{i+1}.png')
+            save_image(image, image_path, normalize=True)
+        print(f"Saved final generated images for {class_name}")
+
     return {'g_losses': g_losses, 'd_losses': d_losses}
 
 def main():
@@ -168,8 +211,10 @@ def main():
     os.makedirs(RESULTS_DIR, exist_ok=True)
     models_dir = os.path.join(RESULTS_DIR, 'models')
     plots_dir = os.path.join(RESULTS_DIR, 'plots')
+    generated_dir = os.path.join(RESULTS_DIR, 'generated_images')
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(plots_dir, exist_ok=True)
+    os.makedirs(generated_dir, exist_ok=True)
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -191,7 +236,7 @@ def main():
         data_sizes[class_name] = len(data_loader.dataset)
         
         # Train DCGAN
-        losses = train_dcgan_for_class(class_name, data_loader, device, models_dir)
+        losses = train_dcgan_for_class(class_name, data_loader, device, models_dir, generated_dir)
         all_losses[class_name] = losses
     
     # Create visualizations
