@@ -13,7 +13,7 @@ import numpy as np
 
 # Data preprocessing
 class DataPreprocessing:
-    def __init__(self, image_size=64): # Changed image size to 244x244
+    def __init__(self, image_size=128): # Changed image size from 64 to 128
         print("\n[INFO] Initializing Data Preprocessing...")
         self.image_size = image_size
         
@@ -54,25 +54,21 @@ class Generator(nn.Module):
     def __init__(self, latent_dim=100):
         super(Generator, self).__init__()
         
-        # Increased number of filters and added dropout for better stability
         self.main = nn.Sequential(
             # Input is latent_dim x 1 x 1
             nn.ConvTranspose2d(latent_dim, 1024, 4, 1, 0, bias=False),
             nn.BatchNorm2d(1024),
             nn.ReLU(True),
-            nn.Dropout2d(0.15),
             
             # State size: 1024 x 4 x 4
             nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
-            nn.Dropout2d(0.15),
             
             # State size: 512 x 8 x 8
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
-            nn.Dropout2d(0.15),
             
             # State size: 256 x 16 x 16
             nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
@@ -80,9 +76,14 @@ class Generator(nn.Module):
             nn.ReLU(True),
             
             # State size: 128 x 32 x 32
-            nn.ConvTranspose2d(128, 3, 4, 2, 1, bias=False),
+            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+
+            # State size: 64 x 64 x 64
+            nn.ConvTranspose2d(64, 3, 4, 2, 1, bias=False),
             nn.Tanh()
-            # Output size: 3 x 64 x 64
+            # Output size: 3 x 128 x 128
         )
 
     def forward(self, x):
@@ -93,14 +94,19 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
         
-        # Increased number of filters and added spectral normalization for stability
         self.main = nn.Sequential(
-            # Input size: 3 x 64 x 64
+            # Input size: 3 x 128 x 128
             nn.utils.spectral_norm(
-                nn.Conv2d(3, 128, 4, 2, 1, bias=False)
+                nn.Conv2d(3, 64, 4, 2, 1, bias=False)
             ),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.15),
+
+            # State size: 64 x 64 x 64
+            nn.utils.spectral_norm(
+                nn.Conv2d(64, 128, 4, 2, 1, bias=False)
+            ),
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
             
             # State size: 128 x 32 x 32
             nn.utils.spectral_norm(
@@ -108,7 +114,6 @@ class Discriminator(nn.Module):
             ),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.15),
             
             # State size: 256 x 16 x 16
             nn.utils.spectral_norm(
@@ -116,7 +121,6 @@ class Discriminator(nn.Module):
             ),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.15),
             
             # State size: 512 x 8 x 8
             nn.utils.spectral_norm(
@@ -124,7 +128,6 @@ class Discriminator(nn.Module):
             ),
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.15),
             
             # State size: 1024 x 4 x 4
             nn.Conv2d(1024, 1, 4, 1, 0, bias=False),
@@ -155,8 +158,8 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
 
     # Setup optimizers with adjusted learning rates and betas
-    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0001, betas=(0.5, 0.999))
-    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0001, betas=(0.5, 0.999))
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.00005, betas=(0.5, 0.999))
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.00005, betas=(0.5, 0.999))
     
     # Create directories for saving
     os.makedirs(f"generated_images/{class_name}", exist_ok=True)
@@ -427,7 +430,7 @@ def plot_training_summary(all_losses):
     
     print(f"[INFO] Training summary plot saved to {save_path}")
 
-def load_class_data(preprocessor, data_path, class_name, batch_size=512):  # Increased from 156 to 512
+def load_class_data(preprocessor, data_path, class_name, batch_size=128):  # Decreased from 512 to 128
     # Load the entire dataset
     dataset = ImageFolder(root=data_path, transform=preprocessor.transforms)
     
