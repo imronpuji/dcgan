@@ -54,25 +54,35 @@ class Generator(nn.Module):
     def __init__(self, latent_dim=100):
         super(Generator, self).__init__()
         
+        # Increased number of filters and added dropout for better stability
         self.main = nn.Sequential(
-            nn.ConvTranspose2d(latent_dim, 512, 4, 1, 0, bias=False),
+            # Input is latent_dim x 1 x 1
+            nn.ConvTranspose2d(latent_dim, 1024, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(True),
+            nn.Dropout2d(0.15),
+            
+            # State size: 1024 x 4 x 4
+            nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
+            nn.Dropout2d(0.15),
             
+            # State size: 512 x 8 x 8
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
+            nn.Dropout2d(0.15),
             
+            # State size: 256 x 16 x 16
             nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
             
-            nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(64, 3, 4, 2, 1, bias=False),
+            # State size: 128 x 32 x 32
+            nn.ConvTranspose2d(128, 3, 4, 2, 1, bias=False),
             nn.Tanh()
+            # Output size: 3 x 64 x 64
         )
 
     def forward(self, x):
@@ -82,23 +92,42 @@ class Generator(nn.Module):
 class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
+        
+        # Increased number of filters and added spectral normalization for stability
         self.main = nn.Sequential(
-            nn.Conv2d(3, 64, 4, 2, 1, bias=False),
+            # Input size: 3 x 64 x 64
+            nn.utils.spectral_norm(
+                nn.Conv2d(3, 128, 4, 2, 1, bias=False)
+            ),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
-            nn.Conv2d(64, 128, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(128),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            nn.Conv2d(128, 256, 4, 2, 1, bias=False),
+            # State size: 128 x 32 x 32
+            nn.utils.spectral_norm(
+                nn.Conv2d(128, 256, 4, 2, 1, bias=False)
+            ),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
-            nn.Conv2d(256, 512, 4, 2, 1, bias=False),
+            # State size: 256 x 16 x 16
+            nn.utils.spectral_norm(
+                nn.Conv2d(256, 512, 4, 2, 1, bias=False)
+            ),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
             
-            nn.Conv2d(512, 1, 4, 1, 0, bias=False),
+            # State size: 512 x 8 x 8
+            nn.utils.spectral_norm(
+                nn.Conv2d(512, 1024, 4, 2, 1, bias=False)
+            ),
+            nn.BatchNorm2d(1024),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout2d(0.15),
+            
+            # State size: 1024 x 4 x 4
+            nn.Conv2d(1024, 1, 4, 1, 0, bias=False),
             nn.Flatten(),
             nn.Linear(1, 1),
             nn.Sigmoid()
@@ -108,9 +137,16 @@ class Discriminator(nn.Module):
         return self.main(x).squeeze(1)
 
 def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
-    # Create the generator and discriminator
+    # Create the generator and discriminator with optimized settings
     netG = Generator(latent_dim=nz).to(device)
     netD = Discriminator().to(device)
+    
+    # Enable automatic mixed precision for faster training
+    scaler = torch.cuda.amp.GradScaler()
+    
+    # Enable cuDNN benchmarking and deterministic mode
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
     
     # Initialize MSELoss function
     criterion = nn.MSELoss()
@@ -118,9 +154,9 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
     # Create batch of latent vectors for visualization
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
 
-    # Setup optimizers
-    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0002, betas=(0.5, 0.999))
-    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0002, betas=(0.5, 0.999))
+    # Setup optimizers with adjusted learning rates and betas
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0001, betas=(0.5, 0.999))
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0001, betas=(0.5, 0.999))
     
     # Create directories for saving
     os.makedirs(f"generated_images/{class_name}", exist_ok=True)
@@ -145,30 +181,45 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
         for i, data in enumerate(data_loader, 0):
             batch_size = data[0].size(0)
             
-            # Train discriminator
-            real_labels = torch.ones(batch_size, device=device)
-            fake_labels = torch.zeros(batch_size, device=device)
+            # Move data to GPU
+            real_cpu = data[0].to(device, non_blocking=True)
             
-            real_cpu = data[0].to(device)
-            optimizerD.zero_grad()
-            real_output = netD(real_cpu)
-            d_real_loss = criterion(real_output, real_labels)
+            # Use label smoothing for real labels
+            real_labels = torch.full((batch_size,), 0.9, dtype=torch.float, device=device)
+            fake_labels = torch.zeros((batch_size,), dtype=torch.float, device=device)
             
-            noise = torch.randn(batch_size, nz, 1, 1, device=device)
-            fake = netG(noise)
-            fake_output = netD(fake.detach())
-            d_fake_loss = criterion(fake_output, fake_labels)
+            # Train discriminator with mixed precision
+            optimizerD.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
             
-            d_loss = d_real_loss + d_fake_loss
-            d_loss.backward()
-            optimizerD.step()
+            with torch.cuda.amp.autocast():
+                # Add noise to discriminator inputs
+                real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
+                real_output = netD(real_cpu_noisy)
+                d_real_loss = criterion(real_output, real_labels)
+                
+                noise = torch.randn(batch_size, nz, 1, 1, device=device)
+                fake = netG(noise)
+                fake_noisy = fake.detach() + 0.05 * torch.randn_like(fake)
+                fake_output = netD(fake_noisy)
+                d_fake_loss = criterion(fake_output, fake_labels)
+                
+                d_loss = d_real_loss + d_fake_loss
             
-            # Train generator
-            optimizerG.zero_grad()
-            fake_output = netD(fake)
-            g_loss = criterion(fake_output, real_labels)
-            g_loss.backward()
-            optimizerG.step()
+            scaler.scale(d_loss).backward()
+            scaler.step(optimizerD)
+            
+            # Train generator with mixed precision
+            optimizerG.zero_grad(set_to_none=True)
+            
+            with torch.cuda.amp.autocast():
+                fake_output = netD(fake)
+                g_loss = criterion(fake_output, real_labels)
+            
+            scaler.scale(g_loss).backward()
+            scaler.step(optimizerG)
+            
+            # Update scaler
+            scaler.update()
             
             # Record losses
             g_loss_epoch += g_loss.item()
@@ -201,7 +252,8 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=200):
                     'g_optimizer_state_dict': optimizerG.state_dict(),
                     'd_optimizer_state_dict': optimizerD.state_dict(),
                     'g_losses': g_losses,
-                    'd_losses': d_losses
+                    'd_losses': d_losses,
+                    'scaler_state_dict': scaler.state_dict()  # Save scaler state
                 }, f'models/{class_name}/checkpoint_epoch_{epoch+1}.pth')
                 
                 # Plot and save loss curves
@@ -375,7 +427,7 @@ def plot_training_summary(all_losses):
     
     print(f"[INFO] Training summary plot saved to {save_path}")
 
-def load_class_data(preprocessor, data_path, class_name, batch_size=156):
+def load_class_data(preprocessor, data_path, class_name, batch_size=512):  # Increased from 156 to 512
     # Load the entire dataset
     dataset = ImageFolder(root=data_path, transform=preprocessor.transforms)
     
@@ -386,12 +438,14 @@ def load_class_data(preprocessor, data_path, class_name, batch_size=156):
     # Create a subset for this class
     subset = torch.utils.data.Subset(dataset, indices)
     
-    # Create dataloader
+    # Create dataloader with optimized settings
     data_loader = DataLoader(
         subset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2
+        num_workers=4,  # Increased from 2 to 4
+        pin_memory=True,  # Enable pinned memory for faster GPU transfer
+        persistent_workers=True  # Keep workers alive between iterations
     )
     
     print(f"[INFO] Found {len(subset)} images for class {class_name}")
