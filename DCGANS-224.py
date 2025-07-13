@@ -55,52 +55,56 @@ class Generator(nn.Module):
         super(Generator, self).__init__()
         self.main = nn.Sequential(
             # Input is latent_dim x 1 x 1
-            nn.ConvTranspose2d(latent_dim, 2048, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(2048),
-            nn.ReLU(True),
-            
-            # State size: 2048 x 4 x 4
-            nn.ConvTranspose2d(2048, 1024, 4, 2, 1, bias=False),
+            nn.ConvTranspose2d(latent_dim, 1024, 4, 1, 0, bias=False),
             nn.BatchNorm2d(1024),
             nn.ReLU(True),
-            nn.Dropout2d(0.15),
             
-            # State size: 1024 x 8 x 8
+            # State size: 1024 x 4 x 4
             nn.ConvTranspose2d(1024, 512, 4, 2, 1, bias=False),
             nn.BatchNorm2d(512),
             nn.ReLU(True),
             nn.Dropout2d(0.15),
             
-            # State size: 512 x 16 x 16
+            # State size: 512 x 8 x 8
             nn.ConvTranspose2d(512, 256, 4, 2, 1, bias=False),
             nn.BatchNorm2d(256),
             nn.ReLU(True),
             nn.Dropout2d(0.15),
             
-            # State size: 256 x 32 x 32
+            # State size: 256 x 16 x 16
             nn.ConvTranspose2d(256, 128, 4, 2, 1, bias=False),
             nn.BatchNorm2d(128),
             nn.ReLU(True),
             nn.Dropout2d(0.15),
             
-            # State size: 128 x 64 x 64
+            # State size: 128 x 32 x 32
             nn.ConvTranspose2d(128, 64, 4, 2, 1, bias=False),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
             
-            # State size: 64 x 128 x 128
+            # State size: 64 x 64 x 64
             nn.ConvTranspose2d(64, 32, 4, 2, 1, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(True),
             
-            # State size: 32 x 224 x 224 (final upsampling to 224)
-            nn.ConvTranspose2d(32, 3, 3, 1, 1, bias=False),
+            # State size: 32 x 128 x 128
+            nn.ConvTranspose2d(32, 16, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(16),
+            nn.ReLU(True),
+            
+            # State size: 16 x 256 x 256 -> crop to 224x224
+            nn.ConvTranspose2d(16, 3, 3, 1, 1, bias=False),
             nn.Tanh()
-            # Output size: 3 x 224 x 224
+            # Output size: 3 x 256 x 256, will be cropped to 224x224
         )
+        
+        # Add adaptive pooling to ensure exact 224x224 output
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((224, 224))
 
     def forward(self, x):
-        return self.main(x)
+        x = self.main(x)
+        x = self.adaptive_pool(x)  # Ensure exact 224x224 output
+        return x
 
 # Discriminator for 224x224 images
 class Discriminator(nn.Module):
@@ -108,49 +112,38 @@ class Discriminator(nn.Module):
         super(Discriminator, self).__init__()
         self.main = nn.Sequential(
             # Input size: 3 x 224 x 224
-            nn.utils.spectral_norm(nn.Conv2d(3, 32, 4, 2, 1, bias=False)),
+            nn.utils.spectral_norm(nn.Conv2d(3, 64, 4, 2, 1, bias=False)),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
 
-            # State size: 32 x 112 x 112
-            nn.utils.spectral_norm(nn.Conv2d(32, 64, 4, 2, 1, bias=False)),
-            nn.BatchNorm2d(64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Dropout2d(0.15),
-
-            # State size: 64 x 56 x 56
+            # State size: 64 x 112 x 112
             nn.utils.spectral_norm(nn.Conv2d(64, 128, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
-            
-            # State size: 128 x 28 x 28
+
+            # State size: 128 x 56 x 56
             nn.utils.spectral_norm(nn.Conv2d(128, 256, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(256),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
             
-            # State size: 256 x 14 x 14
+            # State size: 256 x 28 x 28
             nn.utils.spectral_norm(nn.Conv2d(256, 512, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
             
-            # State size: 512 x 7 x 7
+            # State size: 512 x 14 x 14
             nn.utils.spectral_norm(nn.Conv2d(512, 1024, 4, 2, 1, bias=False)),
             nn.BatchNorm2d(1024),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Dropout2d(0.15),
             
-            # State size: 1024 x 3 x 3
-            nn.utils.spectral_norm(nn.Conv2d(1024, 2048, 3, 1, 0, bias=False)),
-            nn.BatchNorm2d(2048),
-            nn.LeakyReLU(0.2, inplace=True),
-            
-            # State size: 2048 x 1 x 1
-            nn.Conv2d(2048, 1, 1, 1, 0, bias=False),
+            # State size: 1024 x 7 x 7
+            nn.AdaptiveAvgPool2d(1),  # Global average pooling to 1x1
             nn.Flatten(),
-            nn.Linear(1, 1),
+            nn.Linear(1024, 1),
             nn.Sigmoid()
         )
 
