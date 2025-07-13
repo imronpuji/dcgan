@@ -135,16 +135,28 @@ class Discriminator(nn.Module):
         return self.main(x).squeeze(1)
 
 def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
-    # Create the generator and discriminator with optimized settings
-    netG = Generator(latent_dim=nz).to(device)
-    netD = Discriminator().to(device)
+    print(f"[INFO] Initializing models for {class_name} on device: {device}")
     
-    # Enable automatic mixed precision for faster training
-    scaler = torch.cuda.amp.GradScaler()
+    try:
+        # Create the generator and discriminator with optimized settings
+        netG = Generator(latent_dim=nz).to(device)
+        netD = Discriminator().to(device)
+        print(f"[INFO] Models successfully moved to device: {device}")
+    except Exception as e:
+        print(f"[ERROR] Failed to move models to device {device}: {e}")
+        print("[INFO] Falling back to CPU...")
+        device = torch.device("cpu")
+        netG = Generator(latent_dim=nz).to(device)
+        netD = Discriminator().to(device)
     
-    # Enable cuDNN benchmarking and deterministic mode
-    torch.backends.cudnn.benchmark = True
-    torch.backends.cudnn.deterministic = False
+    # Enable automatic mixed precision for faster training (only if using CUDA)
+    if device.type == 'cuda':
+        scaler = torch.cuda.amp.GradScaler()
+        # Enable cuDNN benchmarking and deterministic mode
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cudnn.deterministic = False
+    else:
+        scaler = None
     
     # Initialize MSELoss function
     criterion = nn.MSELoss()
@@ -177,17 +189,39 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
         for i, data in enumerate(data_loader, 0):
             batch_size = data[0].size(0)
             
-            # Move data to GPU
-            real_cpu = data[0].to(device, non_blocking=True)
+            # Move data to device
+            if device.type == 'cuda':
+                real_cpu = data[0].to(device, non_blocking=True)
+            else:
+                real_cpu = data[0].to(device)
             
             # Use label smoothing for real labels
             real_labels = torch.full((batch_size,), 0.9, dtype=torch.float, device=device)
             fake_labels = torch.zeros((batch_size,), dtype=torch.float, device=device)
             
-            # Train discriminator with mixed precision
+            # Train discriminator
             optimizerD.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
             
-            with torch.cuda.amp.autocast():
+            if device.type == 'cuda' and scaler is not None:
+                # Use mixed precision for CUDA
+                with torch.cuda.amp.autocast():
+                    # Add noise to discriminator inputs
+                    real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
+                    real_output = netD(real_cpu_noisy)
+                    d_real_loss = criterion(real_output, real_labels)
+                    
+                    noise = torch.randn(batch_size, nz, 1, 1, device=device)
+                    fake = netG(noise)
+                    fake_noisy = fake.detach() + 0.05 * torch.randn_like(fake)
+                    fake_output = netD(fake_noisy)
+                    d_fake_loss = criterion(fake_output, fake_labels)
+                    
+                    d_loss = d_real_loss + d_fake_loss
+                
+                scaler.scale(d_loss).backward()
+                scaler.step(optimizerD)
+            else:
+                # Regular training for CPU
                 # Add noise to discriminator inputs
                 real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
                 real_output = netD(real_cpu_noisy)
@@ -200,22 +234,29 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                 d_fake_loss = criterion(fake_output, fake_labels)
                 
                 d_loss = d_real_loss + d_fake_loss
+                d_loss.backward()
+                optimizerD.step()
             
-            scaler.scale(d_loss).backward()
-            scaler.step(optimizerD)
-            
-            # Train generator with mixed precision
+            # Train generator
             optimizerG.zero_grad(set_to_none=True)
             
-            with torch.cuda.amp.autocast():
+            if device.type == 'cuda' and scaler is not None:
+                # Use mixed precision for CUDA
+                with torch.cuda.amp.autocast():
+                    fake_output = netD(fake)
+                    g_loss = criterion(fake_output, real_labels)
+                
+                scaler.scale(g_loss).backward()
+                scaler.step(optimizerG)
+                
+                # Update scaler
+                scaler.update()
+            else:
+                # Regular training for CPU
                 fake_output = netD(fake)
                 g_loss = criterion(fake_output, real_labels)
-            
-            scaler.scale(g_loss).backward()
-            scaler.step(optimizerG)
-            
-            # Update scaler
-            scaler.update()
+                g_loss.backward()
+                optimizerG.step()
             
             # Record losses
             g_loss_epoch += g_loss.item()
@@ -239,7 +280,7 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                 print(f"Saved generated images for {class_name} epoch {epoch+1}")
                 
                 # Save model checkpoints
-                torch.save({
+                checkpoint_dict = {
                     'epoch': epoch,
                     'generator_state_dict': netG.state_dict(),
                     'discriminator_state_dict': netD.state_dict(),
@@ -247,8 +288,13 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                     'd_optimizer_state_dict': optimizerD.state_dict(),
                     'g_losses': g_losses,
                     'd_losses': d_losses,
-                    'scaler_state_dict': scaler.state_dict()  # Save scaler state
-                }, f'models/{class_name}/checkpoint_epoch_{epoch+1}.pth')
+                }
+                
+                # Only save scaler state if using CUDA
+                if scaler is not None:
+                    checkpoint_dict['scaler_state_dict'] = scaler.state_dict()
+                
+                torch.save(checkpoint_dict, f'models/{class_name}/checkpoint_epoch_{epoch+1}.pth')
                 
                 # Plot and save loss curves
                 plot_losses(g_losses, d_losses, class_name, epoch+1)
@@ -433,14 +479,26 @@ def load_class_data(preprocessor, data_path, class_name, batch_size=128):  # Dec
     subset = torch.utils.data.Subset(dataset, indices)
     
     # Create dataloader with optimized settings
-    data_loader = DataLoader(
-        subset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=4,  # Increased from 2 to 4
-        pin_memory=True,  # Enable pinned memory for faster GPU transfer
-        persistent_workers=True  # Keep workers alive between iterations
-    )
+    # Check if CUDA is available for optimized settings
+    if torch.cuda.is_available():
+        data_loader = DataLoader(
+            subset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=4,  # Increased from 2 to 4
+            pin_memory=True,  # Enable pinned memory for faster GPU transfer
+            persistent_workers=True  # Keep workers alive between iterations
+        )
+    else:
+        # CPU-only settings
+        data_loader = DataLoader(
+            subset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=2,  # Reduce workers for CPU
+            pin_memory=False,  # Disable pinned memory for CPU
+            persistent_workers=False  # Disable persistent workers for CPU
+        )
     
     print(f"[INFO] Found {len(subset)} images for class {class_name}")
     return data_loader
@@ -451,9 +509,28 @@ def main():
     os.makedirs("models", exist_ok=True)
     os.makedirs("plots", exist_ok=True)
     
-    # Set device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    print(f"[INFO] Using device: {device}")
+    # Force CUDA device to 0 if available
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    
+    # Set device with proper CUDA initialization
+    if torch.cuda.is_available():
+        try:
+            # Clear any existing CUDA context
+            torch.cuda.empty_cache()
+            # Set the device to the first available GPU
+            torch.cuda.set_device(0)
+            device = torch.device("cuda:0")
+            print(f"[INFO] Using device: {device}")
+            print(f"[INFO] CUDA device count: {torch.cuda.device_count()}")
+            print(f"[INFO] Current CUDA device: {torch.cuda.current_device()}")
+            print(f"[INFO] CUDA device name: {torch.cuda.get_device_name(0)}")
+        except Exception as e:
+            print(f"[WARNING] CUDA initialization failed: {e}")
+            print("[INFO] Falling back to CPU")
+            device = torch.device("cpu")
+    else:
+        device = torch.device("cpu")
+        print(f"[INFO] CUDA not available, using CPU")
 
     # --- Command-Line Argument Parsing ---
     ALL_CLASSES = ['Blight', 'Common_Rust', 'Gray_Leaf_Spot', 'Healthy']
