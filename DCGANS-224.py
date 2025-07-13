@@ -174,15 +174,19 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
     else:
         scaler = None
     
-    # Initialize MSELoss function
-    criterion = nn.MSELoss()
+    # Initialize BCELoss function (better for GANs than MSE)
+    criterion = nn.BCELoss()
 
     # Create batch of latent vectors for visualization
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
 
-    # Setup optimizers with adjusted learning rates and betas
-    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.00001, betas=(0.5, 0.999))  # Reduced LR for 224x224
-    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.00001, betas=(0.5, 0.999))  # Reduced LR for 224x224
+    # Setup optimizers with balanced learning rates and betas
+    optimizerD = torch.optim.Adam(netD.parameters(), lr=0.0002, betas=(0.5, 0.999))  # Increased LR for better balance
+    optimizerG = torch.optim.Adam(netG.parameters(), lr=0.0001, betas=(0.5, 0.999))  # Slightly lower than D
+    
+    # Add learning rate schedulers
+    schedulerD = torch.optim.lr_scheduler.StepLR(optimizerD, step_size=100, gamma=0.95)
+    schedulerG = torch.optim.lr_scheduler.StepLR(optimizerG, step_size=100, gamma=0.95)
     
     # Create directories for saving
     os.makedirs(f"generated_images/{class_name}", exist_ok=True)
@@ -211,9 +215,13 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
             else:
                 real_cpu = data[0].to(device)
             
-            # Use label smoothing for real labels
+            # Use label smoothing and noisy labels for better training
             real_labels = torch.full((batch_size,), 0.9, dtype=torch.float, device=device)
-            fake_labels = torch.zeros((batch_size,), dtype=torch.float, device=device)
+            fake_labels = torch.full((batch_size,), 0.1, dtype=torch.float, device=device)  # Add noise to fake labels
+            
+            # Occasionally flip labels to prevent discriminator from being too strong
+            if torch.rand(1).item() < 0.05:  # 5% chance to flip labels
+                real_labels, fake_labels = fake_labels, real_labels
             
             # Train discriminator
             optimizerD.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
@@ -221,14 +229,14 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
             if device.type == 'cuda' and scaler is not None:
                 # Use mixed precision for CUDA
                 with torch.cuda.amp.autocast():
-                    # Add noise to discriminator inputs
-                    real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
+                    # Add noise to discriminator inputs (reduced noise)
+                    real_cpu_noisy = real_cpu + 0.02 * torch.randn_like(real_cpu)
                     real_output = netD(real_cpu_noisy)
                     d_real_loss = criterion(real_output, real_labels)
                     
                     noise = torch.randn(batch_size, nz, 1, 1, device=device)
                     fake = netG(noise)
-                    fake_noisy = fake.detach() + 0.05 * torch.randn_like(fake)
+                    fake_noisy = fake.detach() + 0.02 * torch.randn_like(fake)
                     fake_output = netD(fake_noisy)
                     d_fake_loss = criterion(fake_output, fake_labels)
                     
@@ -238,14 +246,14 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                 scaler.step(optimizerD)
             else:
                 # Regular training for CPU
-                # Add noise to discriminator inputs
-                real_cpu_noisy = real_cpu + 0.05 * torch.randn_like(real_cpu)
+                # Add noise to discriminator inputs (reduced noise)
+                real_cpu_noisy = real_cpu + 0.02 * torch.randn_like(real_cpu)
                 real_output = netD(real_cpu_noisy)
                 d_real_loss = criterion(real_output, real_labels)
                 
                 noise = torch.randn(batch_size, nz, 1, 1, device=device)
                 fake = netG(noise)
-                fake_noisy = fake.detach() + 0.05 * torch.randn_like(fake)
+                fake_noisy = fake.detach() + 0.02 * torch.randn_like(fake)
                 fake_output = netD(fake_noisy)
                 d_fake_loss = criterion(fake_output, fake_labels)
                 
@@ -261,6 +269,14 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                 with torch.cuda.amp.autocast():
                     fake_output = netD(fake)
                     g_loss = criterion(fake_output, real_labels)
+                    
+                    # Add feature matching loss to prevent mode collapse
+                    if i % 5 == 0:  # Every 5 iterations
+                        with torch.no_grad():
+                            real_features = netD.main[:-3](real_cpu)  # Get intermediate features
+                        fake_features = netD.main[:-3](fake)  # Get intermediate features
+                        feature_loss = nn.MSELoss()(fake_features, real_features.detach())
+                        g_loss = g_loss + 0.1 * feature_loss  # Add feature matching loss
                 
                 scaler.scale(g_loss).backward()
                 scaler.step(optimizerG)
@@ -271,6 +287,15 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                 # Regular training for CPU
                 fake_output = netD(fake)
                 g_loss = criterion(fake_output, real_labels)
+                
+                # Add feature matching loss to prevent mode collapse
+                if i % 5 == 0:  # Every 5 iterations
+                    with torch.no_grad():
+                        real_features = netD.main[:-3](real_cpu)  # Get intermediate features
+                    fake_features = netD.main[:-3](fake)  # Get intermediate features
+                    feature_loss = nn.MSELoss()(fake_features, real_features.detach())
+                    g_loss = g_loss + 0.1 * feature_loss  # Add feature matching loss
+                
                 g_loss.backward()
                 optimizerG.step()
             
@@ -284,6 +309,10 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
         avg_d_loss = d_loss_epoch / n_batch
         g_losses.append(avg_g_loss)
         d_losses.append(avg_d_loss)
+        
+        # Update learning rate schedulers
+        schedulerD.step()
+        schedulerG.step()
         
         # Save images and models every 5 epochs
         if (epoch+1) % 5 == 0:
@@ -302,6 +331,8 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
                     'discriminator_state_dict': netD.state_dict(),
                     'g_optimizer_state_dict': optimizerG.state_dict(),
                     'd_optimizer_state_dict': optimizerD.state_dict(),
+                    'g_scheduler_state_dict': schedulerG.state_dict(),
+                    'd_scheduler_state_dict': schedulerD.state_dict(),
                     'g_losses': g_losses,
                     'd_losses': d_losses,
                 }
