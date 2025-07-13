@@ -175,7 +175,9 @@ def train_dcgan(data_loader, class_name, device, nz=100, num_epochs=500):
         scaler = None
     
     # Initialize BCELoss function (better for GANs than MSE)
-    criterion = nn.BCELoss()
+        # Initialize MSELoss function
+    criterion = nn.MSELoss()
+
 
     # Create batch of latent vectors for visualization
     fixed_noise = torch.randn(64, nz, 1, 1, device=device)
